@@ -117,7 +117,7 @@ async def ohlc_data():
     response_description="Fetch new raw data, transform and update values in database",
     status_code=status.HTTP_202_ACCEPTED,
 )
-def update_db(background_tasks: BackgroundTasks):
+async def update_db(background_tasks: BackgroundTasks):
     background_tasks.add_task(update_database)
     return Response(status_code=status.HTTP_202_ACCEPTED)
     
