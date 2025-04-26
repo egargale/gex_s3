@@ -14,8 +14,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from pymongo import MongoClient
 from bson.objectid import ObjectId
-import cloudinary
-import cloudinary.uploader
+import boto3
+
 
 from cboe_data import get_quotes, get_ticker_info
 from gamma_exposure import calculate_gamma_profile, calculate_spot_total_gamma_call_puts
@@ -32,7 +32,8 @@ PG_REF_ID = os.environ.get('PG_REF_ID','Unable to retrieve PG_REF_ID')
 PG_REGION = os.environ.get('PG_REGION','Unable to retrieve PG_REGION')
 PG_URL_PORT = os.environ.get('PG_URL_PORT','Unable to retrieve PG_URL_PORT')
 
-pool_connection = f"postgresql://{PG_USER_NAME}.{PG_REF_ID}:{PG_USER_PWD}@{PG_REGION}:{PG_URL_PORT}/postgres"
+# pool_connection = f"postgresql://{PG_USER_NAME}.{PG_REF_ID}:{PG_USER_PWD}@{PG_REGION}:{PG_URL_PORT}/postgres"
+pool_connection = f"postgresql://{PG_USER_NAME}:{PG_USER_PWD}@{PG_REGION}:{PG_URL_PORT}/postgres"
 engine = create_engine(pool_connection,pool_pre_ping=True, pool_size=15)
 engine.connect()
 
@@ -53,19 +54,20 @@ MONGO_DB_NAME = os.environ.get('MONGO_DB_NAME','Unable to retrieve MONGO_DB_NAME
 mongo_url = f"mongodb+srv://{MONGO_USER}:{MONGO_PWD}@{MONGO_DB_URL}/?retryWrites=true&w=majority"
 
 
-# Create connection for Cloudinary
+# Create connection for AWS booto3
 # ================================
-CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY','Unable to retrieve CLOUDINARY_API_KEY')
-CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET','Unable to retrieve CLOUDINARY_API_SECRET')
-CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME','Unable to retrieve CLOUDINARY_CLOUD_NAME')
+AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID is missing')
+AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY is missing')
+S3_ENDPOINT_URL = os.environ.get('S3_ENDPOINT_URL', 'S3_ENDPOINT_URL is missing')
+S3_BUCKET = os.environ.get('S3_BUCKET', 'S3_BUCKET is missing')
 
-cloudinary.config( 
-  cloud_name = CLOUDINARY_CLOUD_NAME, 
-  api_key = CLOUDINARY_API_KEY, 
-  api_secret = CLOUDINARY_API_SECRET,
-  secure=True,
+# Initialize S3 client
+s3 = boto3.client(
+    's3',
+    endpoint_url=S3_ENDPOINT_URL,
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
-
 
 def store_raw_option_chains() -> dict:
     """
@@ -89,19 +91,29 @@ def store_raw_option_chains() -> dict:
 
     with BytesIO() as buf:
         with gzip.GzipFile(fileobj=buf, mode='w') as gz_file:
-            # gz_file.write(df_upload)
+            # Write the option chain DataFrame to the gzip file
             option_chain.to_csv(TextIOWrapper(gz_file, 'utf8'), index=False, header=True)
 
-        # Upload file to cloudinary
-        response_compressed = cloudinary.uploader.upload(
-            file=buf.getvalue(), 
-            public_id=fname_cloudinary, # 'id_name'
-            unique_filename = False, 
-            overwrite=True,
-            resource_type='raw',
-            tags=CONFIG['CLOUDINARY_TAG'],   #'gamma_exposure'
-            # context='timestamp=2024-01-25|test=True', #pipe-separated values
-        )
+        # Upload file to AWS S3
+        try:
+            s3_key = f"cboe_opt_chain_timestamp_{query_timestamp.strftime('%Y-%m-%dT%H:%M:%S%z')}_delayed_{delayed_timestamp}.tar.gz"
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=s3_key,
+                Body=buf.getvalue()
+            )
+            print(f"File uploaded to S3: {s3_key}")
+
+            # Store the S3 object URL in the response
+            response_compressed = {
+                'secure_url': f"s3://{S3_BUCKET}/{s3_key}",
+                'query_timestamp': query_timestamp.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                'delayed_timestamp': delayed_timestamp
+            }
+
+        except Exception as e:
+            print(f"Error uploading file to S3: {e}")
+            raise
         
     # Append additional info
     response_compressed['query_timestamp'] = query_timestamp.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -224,24 +236,36 @@ def store_total_gamma(secure_url:str, spot_price:float, mongodb_upload_id:str):
         
     
 
-def get_df_from_storage(secure_url:str) -> pd.DataFrame:
+def get_df_from_storage(secure_url: str) -> pd.DataFrame:
     """
-    Retrieve a (compressed) dataframe from object storage
+    Retrieve a (compressed) dataframe from S3 object storage.
 
     Args:
-        public_id (str): secure_url of the object stored
+        secure_url (str): S3 URL of the object stored (e.g., s3://bucket-name/key)
 
     Returns:
         pd.DataFrame: uncompressed dataframe from storage
     """
-    query = {'raw': 'true'} 
-    headers={'User-agent': 'Mozilla/5.0'}
-    response = requests.get(secure_url, params=query, headers=headers, stream=True)
-    
-    with gzip.open(BytesIO(response.content), 'rt') as gzip_file:
-        df = pd.read_csv(gzip_file, sep=',', skiprows=0, index_col=None)
-        
-    return df
+    try:
+        # Parse the S3 URL to extract bucket and key
+        if not secure_url.startswith("s3://"):
+            raise ValueError("Invalid S3 URL format. Expected format: s3://bucket-name/key")
+
+        bucket, key = secure_url.replace("s3://", "").split("/", 1)
+
+        # Retrieve the object from S3
+        response = s3.get_object(Bucket=bucket, Key=key)
+        file_content = response['Body'].read()
+
+        # Decompress the file content and load it into a DataFrame
+        with gzip.open(BytesIO(file_content), 'rt') as gzip_file:
+            df = pd.read_csv(gzip_file, sep=',', skiprows=0, index_col=None)
+
+        return df
+
+    except Exception as e:
+        print(f"Error retrieving file from S3: {e}")
+        raise
     
 def get_quote_info_from_mongo(mongodb_upload_id:str) -> pd.DataFrame:
     """
@@ -295,6 +319,7 @@ def get_ohlc_data() -> pd.DataFrame:
     
     # get historical market data
     yfin_hist = yfin_ticker.history(start='2021-01-01')
+    # yfin_hist = yfin_ticker.history(period='1mo')
     
     return yfin_hist
 
@@ -303,8 +328,14 @@ def get_gex_levels_data() -> dict:
     with MongoClient(mongo_url) as mongodb_client:
         mongo_database = mongodb_client[MONGO_DB_NAME]
         mongo_collection = mongo_database[CONFIG['MONGODB_COLECTION_GEX_STRIKES']]
-        
-        cursor = mongo_collection.find({})
+         # Define filter, sort, and limit
+        filter = {}
+        sort = [('_id', -1)]  # Sort by _id in descending order
+        limit = 1
+
+        # Query MongoDB with filter, sort, and limit
+        cursor = mongo_collection.find(filter=filter).sort(sort).limit(limit)
+        # cursor = mongo_collection.find({})
         for document in cursor:
             doc_keys = list(document.keys())
             dict_gex_levels[doc_keys[-1]] = document[doc_keys[-1]]
@@ -316,8 +347,15 @@ def get_gex_profile_data() -> dict:
     with MongoClient(mongo_url) as mongodb_client:
         mongo_database = mongodb_client[MONGO_DB_NAME]
         mongo_collection = mongo_database[CONFIG['MONGODB_COLECTION_GEX_PROFILE']]
-        
-        cursor = mongo_collection.find({})
+        # Define filter, sort, and limit
+        filter = {}
+        sort = [('_id', -1)]  # Sort by _id in descending order
+        limit = 1
+
+        # Query MongoDB with filter, sort, and limit
+        cursor = mongo_collection.find(filter=filter).sort(sort).limit(limit)
+        # old find
+        # cursor = mongo_collection.find({})
         for document in cursor:
             doc_keys = list(document.keys())
             dict_gex_profile[doc_keys[-1]] = document[doc_keys[-1]]
@@ -329,8 +367,13 @@ def get_zero_gamma_data() -> dict:
     with MongoClient(mongo_url) as mongodb_client:
         mongo_database = mongodb_client[MONGO_DB_NAME]
         mongo_collection = mongo_database[CONFIG['MONGODB_COLECTION_GEX_ZERO_GAMMA']]
-        
-        cursor = mongo_collection.find({})
+        # Define filter, sort, and limit
+        filter = {}
+        sort = [('_id', -1)]  # Sort by _id in descending order
+        limit = 1
+        # Query MongoDB with filter, sort, and limit
+        cursor = mongo_collection.find(filter=filter).sort(sort).limit(limit)
+        # cursor = mongo_collection.find({})
         for document in cursor:
             doc_keys = list(document.keys())
             dict_zero_gamma[doc_keys[-1]] = document[doc_keys[-1]]
@@ -372,6 +415,37 @@ def update_database():
     
     print('Total gamma has been stored')
     
-
+def init_db_from_scratch():
+    """
+    Drop and recreate all tables in PostgreSQL and drop all collections in MongoDB.
+    
+    Returns:
+        dict: A dictionary with a 'status' key indicating success (1) or failure (0).
+    """
+    print("Initializing database from scratch...")
+    
+    try:
+        # PostgreSQL: Drop and recreate tables
+        print("Dropping and recreating PostgreSQL tables...")
+        Base.metadata.drop_all(bind=engine)  # Drop all existing tables
+        Base.metadata.create_all(bind=engine)  # Recreate tables
+        print("PostgreSQL tables initialized successfully.")
+        
+        # MongoDB: Drop all collections
+        print("Dropping all MongoDB collections...")
+        with MongoClient(mongo_url) as mongodb_client:
+            mongo_database = mongodb_client[MONGO_DB_NAME]
+            for collection_name in mongo_database.list_collection_names():
+                mongo_database.drop_collection(collection_name)
+                print(f"Dropped MongoDB collection: {collection_name}")
+        print("MongoDB collections dropped successfully.")
+        
+        # Return success status
+        return {"status": 1}
+    
+    except Exception as e:
+        # Log the error and return failure status
+        print(f"Error during database initialization: {e}")
+        return {"status": 0}
 if __name__ == '__main__':
     update_database()
