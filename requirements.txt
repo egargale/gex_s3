@@ -46,3 +46,4 @@ uvloop
 webencodings
 wheel
 yfinance
+duckdb
