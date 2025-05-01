@@ -21,7 +21,7 @@ from database import (
     store_gamma_profile,
     store_total_gamma,
     update_database,
-    update_database_duckdb
+    # update_database_duckdb
 )
 from memoryduck import (
     load_db, 
@@ -47,8 +47,8 @@ store_option_chains()
 updated_option_chains_gex()
 
 # Loading DuckDB database
-duckdb_conn = update_database_duckdb(duckdb_conn)
-print("Loading DuckDB records from DuckDB")
+# duckdb_conn = update_database_duckdb(duckdb_conn)
+# print("Loading DuckDB records from DuckDB")
 
 
 app = FastAPI(
