@@ -1,45 +1,16 @@
 import duckdb
 import pandas as pd
 import numpy as np
-import os
 from dotenv import load_dotenv
 from cboe_data import get_ticker_info
 from config import CONFIG
+from config import get_duckdb_connection
 
 
-def get_duckdb_conn():
-    duckdb_conn = duckdb.connect()
-
-     # Get env variables
-    load_dotenv()
-    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID is missing')
-    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY is missing')
-    S3_ENDPOINT_URL = os.environ.get('S3_ENDPOINT_URL', 'S3_ENDPOINT_URL is missing')
-    # Create or replace secret using environment variables
-    duckdb_conn.execute(f"""
-    CREATE OR REPLACE SECRET s3_secret (
-        TYPE s3,
-        PROVIDER config,
-        KEY_ID "{AWS_ACCESS_KEY_ID}",
-        SECRET "{AWS_SECRET_ACCESS_KEY}",
-        REGION 'eu-central-1',
-        ENDPOINT "{S3_ENDPOINT_URL}",
-        URL_STYLE 'path'
-    );
-    """)
+def load_db():
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
     
-    # duckdb_conn.sql(
-    #     "attach 's3://lbr-files/GEX/gexdb.duckdb' as external_db"
-    # )
-    # duckdb_conn.sql("use external_db")
-    # for testing use in memory 
-    duckdb_conn.sql("USE memory;")
-    duckdb_conn.sql("INSTALL httpfs;")
-    duckdb_conn.sql("LOAD httpfs;")
-    
-    return duckdb_conn
-
-def load_db(con):
     option_chain_ticker_info = get_ticker_info(symbol=CONFIG['CBOE_TICKER'])[0]
     # Read S3 parquet files and setup a DB
     # Ensure the DataFrame has a 'close' row and extract its value
@@ -49,7 +20,7 @@ def load_db(con):
         raise
     print(spotPrice)
     # Create or replace table `db_chains`
-    con.execute(r"""
+    duckdb_conn.execute(r"""
     CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true) ORDER by last_trade_date;
     CREATE INDEX idx ON db_chains (last_trade_date);
     CREATE OR REPLACE TABLE db_chains_test AS
@@ -72,29 +43,37 @@ def load_db(con):
       FROM src
     );
     """, [spotPrice])
-    return con
+    return duckdb_conn
 
-def store_option_chains_fromdf(con, chain_data):
+def store_option_chains_fromdf(chain_data):
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    
     # Create table `option_chains_df` from DF
-    con.execute("""
+    duckdb_conn.execute("""
         CREATE OR REPLACE TABLE option_chains_df AS 
         SELECT * FROM chain_data;
         """)
     
-    return con
-def store_option_chains(con):
+    return duckdb_conn
+def store_option_chains():
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    
     # Create table `option_chains` by reading JSON data
-    con.execute(r"""
+    duckdb_conn.execute(r"""
     CREATE OR REPLACE TABLE option_chains AS 
     SELECT * FROM read_json_auto('https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json');
     """)
     
-    return con
+    return duckdb_conn
 
-def updated_option_chains_gex(con):
-
+def updated_option_chains_gex():
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    
     # Create table option_chains_processed with transformations
-    con.execute(r"""
+    duckdb_conn.execute(r"""
 CREATE OR REPLACE TABLE option_chains_processed AS
   WITH src AS (SELECT *
                 FROM option_chains)
@@ -113,7 +92,7 @@ CREATE OR REPLACE TABLE option_chains_processed AS
       SELECT symbol, "timestamp" AS last_trade_date, data.current_price AS spotPrice, UNNEST(data.options) AS u FROM src);
     """)
 
-    con.execute(r"""
+    duckdb_conn.execute(r"""
 COPY (
     SELECT (* EXCLUDE (spotPrice, dte, CallGEX, PutGEX)),
            YEAR(last_trade_date) AS year, 
@@ -122,16 +101,51 @@ COPY (
 ) TO 's3://lbr-files/GEX/GEXARCHIVE'(FORMAT PARQUET, PARTITION_BY (year, month), APPEND);
     """)
     
-    return con
+    duckdb_conn.execute(r"""
+COPY option_chains_processed TO 's3://lbr-files/GEX/test.xlsx' WITH (FORMAT xlsx, HEADER true);    
+    """)
+    
+    return duckdb_conn
+def get_gex_levels_data_df() -> pd.DataFrame:
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    """
+    Executes a SQL query to aggregate GEX levels data and returns it as a DataFrame.
+
+    Parameters:
+        con: DuckDB connection object.
+
+    Returns:
+        pd.DataFrame: Aggregated GEX levels data.
+    """
+    query = r"""
+    SELECT
+        dte,
+        strike,
+        SUM(CallGEX) / 1e9 AS total_call_gex,
+        SUM(PutGEX) / 1e9 AS total_put_gex,
+        (SUM(CallGEX) + SUM(PutGEX)) / 1e9 AS total_gamma
+    FROM option_chains_processed
+    WHERE open_interest >= 100
+    GROUP BY dte, strike
+    ORDER BY dte, strike;
+    """
+    # Execute the query and fetch the result as a DataFrame
+    df = duckdb_conn.execute(query).fetchdf()
+    
+    # Print the DataFrame for debugging purposes
+    print("Quiery from duckDB Table option_chains_processed")
+    print(df)
+    
+    # Return the DataFrame
+    return df
 
 def main():
-    # Initialize variables
-    duckdb_conn = None
-    # Create a connection to DuckDB
-    duckdb_conn = get_duckdb_conn()
-    duckdb_conn = load_db(duckdb_conn)
-    duckdb_conn = store_option_chains(duckdb_conn)
-    duckdb_conn = updated_option_chains_gex(duckdb_conn)
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    load_db()
+    store_option_chains()
+    updated_option_chains_gex()
     # print duckdb records
     test = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
     print(test)

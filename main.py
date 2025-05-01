@@ -2,11 +2,11 @@ from fastapi import FastAPI, status, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
-
 import pandas as pd
-
-import os
+from config import get_duckdb_connection
 from dotenv import load_dotenv
+import os
+
 
 # Load endpoint functions
 from database import (
@@ -21,11 +21,34 @@ from database import (
     store_gamma_profile,
     store_total_gamma,
     update_database,
+    update_database_duckdb
+)
+from memoryduck import (
+    load_db, 
+    store_option_chains, 
+    updated_option_chains_gex,
+    get_gex_levels_data_df
 )
 
 # Get env variables
 load_dotenv()
 # load_dotenv(dotenv_path=os.path.join('..','.env'))
+
+# Initialize the singleton DuckDB connection
+duckdb_conn = get_duckdb_connection()
+
+# Load data into the database
+load_db()
+
+# Store option chains
+store_option_chains()
+
+# Update option chains with GEX calculations
+updated_option_chains_gex()
+
+# Loading DuckDB database
+duckdb_conn = update_database_duckdb(duckdb_conn)
+print("Loading DuckDB records from DuckDB")
 
 
 app = FastAPI(
@@ -99,6 +122,24 @@ async def gex_profile_data():
 async def gex_levels_data():
     dict_gex_levels = get_gex_levels_data()        
     return dict_gex_levels
+@app.api_route( 
+    "/gex_levels_duck",
+    methods=["GET", "HEAD"],
+    response_description="Get gex levels data from DuckDB",
+    status_code=status.HTTP_200_OK,
+)
+async def gex_levels_data_duck():
+    """
+    Fetch GEX levels data from DuckDB using the global connection.
+    """
+    # Use the globally defined DuckDB connection
+    global duckdb_conn
+
+    # Call the function to fetch GEX levels data
+    panda_gex_levels = get_gex_levels_data_df()
+
+    # Convert the DataFrame to a dictionary and return it
+    return panda_gex_levels.to_dict(orient="records")
 
 @app.api_route(
     "/ohlc_data",
