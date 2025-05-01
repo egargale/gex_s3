@@ -17,7 +17,7 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 import boto3
 
-from memoryduck import get_duckdb_conn, store_option_chains, store_option_chains_fromdf, updated_option_chains_gex
+from memoryduck import get_duckdb_conn, store_option_chains, store_option_chains_fromdf, updated_option_chains_gex, load_db
 from cboe_data import get_quotes, get_ticker_info
 from gamma_exposure import calculate_gamma_profile, calculate_spot_total_gamma_call_puts
 from config import CONFIG
@@ -388,6 +388,7 @@ def get_zero_gamma_data() -> dict:
 
 def update_database_duckdb():
     duckdb_conn = get_duckdb_conn()
+    duckdb_conn = load_db(duckdb_conn)
     duckdb_conn = store_option_chains(duckdb_conn)
     duckdb_conn = updated_option_chains_gex(duckdb_conn)
     # print duckdb records

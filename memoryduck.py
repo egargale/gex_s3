@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 import os
 from dotenv import load_dotenv
+from cboe_data import get_ticker_info
+from config import CONFIG
+
 
 def get_duckdb_conn():
     duckdb_conn = duckdb.connect()
@@ -36,14 +39,39 @@ def get_duckdb_conn():
     
     return duckdb_conn
 
-def get_db_chains(con):
+def load_db(con):
+    option_chain_ticker_info = get_ticker_info(symbol=CONFIG['CBOE_TICKER'])[0]
     # Read S3 parquet files and setup a DB
+    # Ensure the DataFrame has a 'close' row and extract its value
+    if 'close' in option_chain_ticker_info.index:
+        spotPrice = option_chain_ticker_info.loc['close'].values[0]  # Extract the value from the 'close' row
+    else:
+        raise
+    print(spotPrice)
+    # Create or replace table `db_chains`
     con.execute(r"""
-    CREATE OR REPLACE TABLE db_chains AS 
-    FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true) ORDER by last_trade_date;
+    CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true) ORDER by last_trade_date;
     CREATE INDEX idx ON db_chains (last_trade_date);
-    """)
-    
+    CREATE OR REPLACE TABLE db_chains_test AS
+        WITH src AS (SELECT * FROM db_chains)
+    SELECT
+      *,
+      DATEDIFF('day', CURRENT_DATE, STRPTIME(regexp_extract(option, '(\d{6})[PC]', 1), '%y%m%d')) AS dte,
+      (CASE WHEN "right" = 'C' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 ELSE 0 END) AS CallGEX,
+      (CASE WHEN "right" = 'P' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
+    FROM (
+      SELECT 
+        strike,
+        open_interest, 
+        ? AS spotPrice, 
+        option, 
+        expiration_date, 
+        last_trade_date, 
+        "right", 
+        "gamma" 
+      FROM src
+    );
+    """, [spotPrice])
     return con
 
 def store_option_chains_fromdf(con, chain_data):
@@ -62,8 +90,7 @@ def store_option_chains(con):
     """)
     
     return con
-    
-    return con
+
 def updated_option_chains_gex(con):
 
     # Create table option_chains_processed with transformations
@@ -102,55 +129,13 @@ def main():
     duckdb_conn = None
     # Create a connection to DuckDB
     duckdb_conn = get_duckdb_conn()
-
-#         # Get db_chains
-#         duckdb_conn = get_db_chains(duckdb_conn)
-#         last_updated_date = duckdb_conn.sql("SELECT MAX(last_trade_date) FROM db_chains").fetchone()[0]
-#         print(f"Last updated date: {last_updated_date}")
-
-#         # Get option chains
-#         duckdb_conn = get_option_chains(duckdb_conn)
-        
-#         # Update the option_chains_gex table
-#         duckdb_conn = updated_option_chains_gex(duckdb_conn)
-
-#         # Print the results
-#         # df = duckdb_conn.sql("FROM option_chains_gex") \
-#         #     .filter("strike >= 3000 AND strike <= 8000") \
-#         #     .order("strike") \
-#         #     .to_df()
-#         ## example of prepared statment
-#         query = r"""
-#             SELECT
-#             strike,
-#             spotPrice,
-#             SUM(CallGEX) / 1e9 AS total_call_gex,
-#             SUM(PutGEX) / 1e9 AS total_put_gex,
-#             -- Compute Total Gamma (CallGEX - PutGEX for net exposure)
-#             (SUM(CallGEX) - SUM(PutGEX)) / 1e9 AS total_gamma
-#             FROM option_chains_test
-#             WHERE 
-#             (strike BETWEEN spotPrice * 0.85 AND spotPrice * 1.15) AND dte == 0
-#             GROUP BY strike, spotPrice
-#             ORDER BY strike;
-#         """
-#         # All DTE grouped by strike
-#         query1 =r"""
-#             SELECT
-#                 dte,
-#                 strike,
-#                 ANY_VALUE(spotPrice) AS spotPrice,
-#                 SUM(CallGEX)  / 1e9 AS total_call_gex,
-#                 SUM(PutGEX) / 1e9 AS total_put_gex,
-#                 (SUM(CallGEX) + SUM(PutGEX)) / 1e9 AS total_gamma
-#             FROM option_chains_test
-#             WHERE open_interest >= 100
-#             GROUP BY dte, strike
-#             ORDER BY dte, strike;
-#         """
-#         df = duckdb_conn.execute(query1).fetchdf()
-#         print(df)
-#         # Filter the DataFrame to include only rows where dte == 0
+    duckdb_conn = load_db(duckdb_conn)
+    duckdb_conn = store_option_chains(duckdb_conn)
+    duckdb_conn = updated_option_chains_gex(duckdb_conn)
+    # print duckdb records
+    test = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
+    print(test)
+    duckdb_conn.close()
        
 if __name__ == "__main__":
     main()
