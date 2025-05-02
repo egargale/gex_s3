@@ -139,7 +139,7 @@ async def gex_levels_data_duck():
     panda_gex_levels = get_gex_levels_data_df()
 
     # Convert the DataFrame to a dictionary and return it
-    return panda_gex_levels.to_dict(orient="records")
+    return panda_gex_levels.to_dict(orient="list")
 
 @app.api_route(
     "/ohlc_data",

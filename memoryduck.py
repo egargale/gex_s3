@@ -19,30 +19,32 @@ def load_db():
     else:
         raise
     print(spotPrice)
+    #
     # Create or replace table `db_chains`
+    #  CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true) WHERE last_trade_date >= Now() - INTERVAL '3 DAYS' ORDER by last_trade_date;
     duckdb_conn.execute(r"""
-    CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true) ORDER by last_trade_date;
-    CREATE INDEX idx ON db_chains (last_trade_date);
-    CREATE OR REPLACE TABLE db_chains_test AS
-        WITH src AS (SELECT * FROM db_chains)
+CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true)
+    WHERE last_trade_date >= Now() - INTERVAL '3 DAYS'
+    ORDER by last_trade_date;
+""")
+    #
+    # Create or replace table `db_chains_test`
+    duckdb_conn.execute(r"""
+CREATE OR REPLACE TABLE db_chains_test AS
     SELECT
-      *,
-      DATEDIFF('day', CURRENT_DATE, STRPTIME(regexp_extract(option, '(\d{6})[PC]', 1), '%y%m%d')) AS dte,
-      (CASE WHEN "right" = 'C' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 ELSE 0 END) AS CallGEX,
-      (CASE WHEN "right" = 'P' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
-    FROM (
-      SELECT 
-        strike,
-        open_interest, 
-        ? AS spotPrice, 
-        option, 
-        expiration_date, 
-        last_trade_date, 
-        "right", 
-        "gamma" 
-      FROM src
-    );
+        *,
+        ? AS spotPrice,
+        DATEDIFF('day', CURRENT_DATE, expiration_date) AS dte,
+        (CASE WHEN "right" = 'C' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 ELSE 0 END) AS CallGEX,
+        (CASE WHEN "right" = 'P' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
+    FROM db_chains;
     """, [spotPrice])
+    #
+    # Create an index on the `last_trade_date`, `expiration_date`, and `strike` columns
+    duckdb_conn.execute(r"""
+CREATE INDEX option_idx ON db_chains_test (last_trade_date, expiration_date, strike);
+                    """)
+    
     return duckdb_conn
 
 def store_option_chains_fromdf(chain_data):
@@ -50,7 +52,7 @@ def store_option_chains_fromdf(chain_data):
     duckdb_conn = get_duckdb_connection()
     
     # Create table `option_chains_df` from DF
-    duckdb_conn.execute("""
+    duckdb_conn.execute(r"""
         CREATE OR REPLACE TABLE option_chains_df AS 
         SELECT * FROM chain_data;
         """)
@@ -134,8 +136,8 @@ def get_gex_levels_data_df() -> pd.DataFrame:
     df = duckdb_conn.execute(query).fetchdf()
     
     # Print the DataFrame for debugging purposes
-    print("Quiery from duckDB Table option_chains_processed")
-    print(df)
+    # print("Quiery from duckDB Table option_chains_processed")
+    # print(df)
     
     # Return the DataFrame
     return df
