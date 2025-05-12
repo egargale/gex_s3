@@ -20,19 +20,22 @@ from database import (
     store_execution_details_sql,
     store_gamma_profile,
     store_total_gamma,
-    update_database,
-    # update_database_duckdb
+    update_database
 )
 from memoryduck import (
     load_db, 
     store_option_chains, 
     updated_option_chains_gex,
-    get_gex_levels_data_df
+    write_gex_levels_to_deltatable,
+    get_gex_levels_from_deltatable
 )
 
 # Get env variables
 load_dotenv()
 # load_dotenv(dotenv_path=os.path.join('..','.env'))
+
+# TODO
+DELTA_TABLE = os.environ.get('DELTA_TABLE', 'DELTA_TABLE is missing')
 
 # Initialize the singleton DuckDB connection
 duckdb_conn = get_duckdb_connection()
@@ -45,6 +48,9 @@ store_option_chains()
 
 # Update option chains with GEX calculations
 updated_option_chains_gex()
+
+#  Store GEX levels in deltatable
+write_gex_levels_to_deltatable(DELTA_TABLE)
 
 # Loading DuckDB database
 # duckdb_conn = update_database_duckdb(duckdb_conn)
@@ -136,7 +142,7 @@ async def gex_levels_data_duck():
     global duckdb_conn
 
     # Call the function to fetch GEX levels data
-    panda_gex_levels = get_gex_levels_data_df()
+    panda_gex_levels = get_gex_levels_from_deltatable()
 
     # Convert the DataFrame to a dictionary and return it
     return panda_gex_levels.to_dict(orient="list")

@@ -51,4 +51,6 @@ def get_duckdb_connection():
         duckdb_conn.sql("LOAD httpfs;")
         duckdb_conn.sql("INSTALL excel;")
         duckdb_conn.sql("LOAD excel;")
+        duckdb_conn.sql("INSTALL delta;")
+        duckdb_conn.sql("LOAD delta;")
     return duckdb_conn

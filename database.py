@@ -17,10 +17,12 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 import boto3
 
-from memoryduck import get_duckdb_conn, store_option_chains, store_option_chains_fromdf, updated_option_chains_gex
+# from memoryduck import get_duckdb_conn, store_option_chains, store_option_chains_fromdf, updated_option_chains_gex, load_db
 from cboe_data import get_quotes, get_ticker_info
 from gamma_exposure import calculate_gamma_profile, calculate_spot_total_gamma_call_puts
 from config import CONFIG
+from config import get_duckdb_connection
+from memoryduck import store_option_chains_fromdf
 
 # Get env variables
 load_dotenv()
@@ -54,11 +56,6 @@ MONGO_DB_NAME = os.environ.get('MONGO_DB_NAME','Unable to retrieve MONGO_DB_NAME
 
 mongo_url = f"mongodb+srv://{MONGO_USER}:{MONGO_PWD}@{MONGO_DB_URL}/?retryWrites=true&w=majority"
 
-# Create a DuckDB connection
-# Initialize variables
-duckdb_conn = None
-duckdb_conn = get_duckdb_conn()
-
 # Create connection for AWS booto3
 # ================================
 AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID is missing')
@@ -69,7 +66,7 @@ S3_BUCKET = os.environ.get('S3_BUCKET', 'S3_BUCKET is missing')
 # Initialize S3 client
 s3 = boto3.client(
     's3',
-    endpoint_url=S3_ENDPOINT_URL,
+    endpoint_url=f"https://{S3_ENDPOINT_URL}",
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
@@ -125,7 +122,11 @@ def store_raw_option_chains() -> dict:
     response_compressed['delayed_timestamp'] = delayed_timestamp
 
     # Create Duckdb record with upload info
-    store_option_chains_fromdf(duckdb_conn, option_chain)
+    duckdb_conn = get_duckdb_connection()
+    store_option_chains_fromdf(option_chain)
+    # test duckdb inmemory worked
+    df = duckdb_conn.sql("SELECT timestamp, symbol FROM option_chains").to_df()
+    print(df)
 
     # Create MongoDB document with upload information
     with MongoClient(mongo_url) as mongodb_client:
@@ -386,13 +387,6 @@ def get_zero_gamma_data() -> dict:
     
     return dict_zero_gamma
 
-def update_database_duckdb():
-    duckdb_conn = store_option_chains(duckdb_conn)
-    duckdb_conn = updated_option_chains_gex(duckdb_conn)
-    # print duckdb records
-    test = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
-    print(test)
-    
 def update_database():
     print('Fetch new option data from source')
     # Fetch new option data and store in S3
@@ -413,8 +407,8 @@ def update_database():
     print(f'Last trade date obtained: {last_trade_date}')
     
     # print duckdb records
-    test = duckdb_conn.sql("SELECT * FROM option_chains_df").to_df()
-    print(test)
+    # test = duckdb_conn.sql("SELECT * FROM option_chains_df").to_df()
+    # print(test)
 
     # Calculate gamma exposure and store in database
     upload_id_profile, upload_id_zero = store_gamma_profile(
@@ -464,6 +458,6 @@ def init_db_from_scratch():
         # Log the error and return failure status
         print(f"Error during database initialization: {e}")
         return {"status": 0}
+
 if __name__ == '__main__':
-    update_database_duckdb()
-    # update_database()
+    update_database()

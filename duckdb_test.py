@@ -1,10 +1,33 @@
 import duckdb
 import pandas as pd
 import numpy as np
-# import seaborn as sns
 import matplotlib.pyplot as plt
 import os
 from dotenv import load_dotenv
+# import boto3
+from config import CONFIG
+from deltalake import write_deltalake
+
+# Get env variables
+load_dotenv()
+
+# Create connection for AWS booto3
+# ================================
+AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID is missing')
+AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY is missing')
+S3_ENDPOINT_URL = os.environ.get('S3_ENDPOINT_URL', 'S3_ENDPOINT_URL is missing')
+S3_BUCKET = os.environ.get('S3_BUCKET', 'S3_BUCKET is missing')
+# Initialize S3 client
+# s3 = boto3.client(
+#     's3',
+#     endpoint_url=f"https://{S3_ENDPOINT_URL}",
+#     aws_access_key_id=AWS_ACCESS_KEY_ID,
+#     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+# )
+print(AWS_ACCESS_KEY_ID)
+print(AWS_SECRET_ACCESS_KEY)
+print(S3_ENDPOINT_URL)  
+print(S3_BUCKET)
 
 
 def get_duckdb_conn():
@@ -144,6 +167,20 @@ def main():
         """
         df = duckdb_conn.execute(query1).fetchdf()
         print(df)
+        # Saving to deltatable
+        storage_options = {
+            # 'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
+            # 'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY,
+            'AWS_ENDPOINT_URL': 'https://s3.eu-central-1.wasabisys.com',
+            # 'virtual_hosted_style_request': "False"
+        }
+        write_deltalake(
+            's3a://lbr-files/GEX/DELTATest/',
+            df,
+            mode="overwrite",
+            storage_options=storage_options
+        )
+        # Charting
         # Filter the DataFrame to include only rows where dte == 0
         df1 = df[df['dte'] == 0]
         # Plot grouped bars for CallGEX and PutGEX
