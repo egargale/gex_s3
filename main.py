@@ -2,8 +2,6 @@ from fastapi import FastAPI, status, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
-import pandas as pd
-from config import get_duckdb_connection
 from dotenv import load_dotenv
 import os
 
@@ -23,10 +21,7 @@ from database import (
     update_database
 )
 from memoryduck import (
-    load_db, 
-    store_option_chains, 
-    updated_option_chains_gex,
-    write_gex_levels_to_deltatable,
+    update_database_duckdb,
     get_gex_levels_from_deltatable
 )
 
@@ -36,26 +31,6 @@ load_dotenv()
 
 # TODO
 DELTA_TABLE = os.environ.get('DELTA_TABLE', 'DELTA_TABLE is missing')
-
-# Initialize the singleton DuckDB connection
-duckdb_conn = get_duckdb_connection()
-
-# Load data into the database
-load_db()
-
-# Store option chains
-store_option_chains()
-
-# Update option chains with GEX calculations
-updated_option_chains_gex()
-
-#  Store GEX levels in deltatable
-write_gex_levels_to_deltatable(DELTA_TABLE)
-
-# Loading DuckDB database
-# duckdb_conn = update_database_duckdb(duckdb_conn)
-# print("Loading DuckDB records from DuckDB")
-
 
 app = FastAPI(
     title="Gamma Exposure app",
@@ -138,12 +113,8 @@ async def gex_levels_data_duck():
     """
     Fetch GEX levels data from DuckDB using the global connection.
     """
-    # Use the globally defined DuckDB connection
-    global duckdb_conn
-
     # Call the function to fetch GEX levels data
     panda_gex_levels = get_gex_levels_from_deltatable()
-
     # Convert the DataFrame to a dictionary and return it
     return panda_gex_levels.to_dict(orient="list")
 
@@ -167,7 +138,16 @@ async def ohlc_data():
 async def update_db(background_tasks: BackgroundTasks):
     background_tasks.add_task(update_database)
     return Response(status_code=status.HTTP_202_ACCEPTED)
-    
+
+@app.post(
+    "/update_db_duck",
+    response_description="Fetch new raw data, transform and update values in database",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def update_db_duck(background_tasks: BackgroundTasks):
+    background_tasks.add_task(update_database_duckdb)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
 @app.post(
     "/initialize",
     response_description="Drop SQL tables and MongoDB collections and re-create them from scratch",
@@ -188,5 +168,4 @@ async def initialize(pwd: str):
         raise HTTPException(status_code=404, detail=f"Unable to perform initialization")
     else:
         raise HTTPException(status_code=404, detail=f"Credentials not valid")
-    
     

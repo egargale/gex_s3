@@ -47,3 +47,4 @@ webencodings
 wheel
 yfinance
 duckdb
+deltalake

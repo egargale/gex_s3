@@ -38,7 +38,7 @@ CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXAR
     WHERE last_trade_date >= Now() - INTERVAL '3 DAYS'
     ORDER by last_trade_date;
     """)
-    print(f"Records loaded: {duckdb_conn.execute("SELECT COUNT(*) FROM db_chains").fetchone()[0]}")
+    print(f"History Records loaded: {duckdb_conn.execute("SELECT COUNT(*) FROM db_chains").fetchone()[0]}")
     #
     # Create or replace table `db_chains_test`
     duckdb_conn.execute(r"""
@@ -51,7 +51,7 @@ CREATE OR REPLACE TABLE db_chains_test AS
         (CASE WHEN "right" = 'P' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
     FROM db_chains;
     """, [spotPrice])
-    print(f"Records loaded: {duckdb_conn.execute('SELECT COUNT(*) FROM db_chains_test').fetchone()[0]}")
+    print(f"Records recalculated: {duckdb_conn.execute('SELECT COUNT(*) FROM db_chains_test').fetchone()[0]}")
     #
     # Create an index on the `last_trade_date`, `expiration_date`, and `strike` columns
     duckdb_conn.execute(r"""
@@ -176,8 +176,8 @@ def write_gex_levels_to_deltatable(file_path: str):
         mode="overwrite",
         storage_options=storage_options
     )
-    
-    print(f"Written {df.count()} records to {file_path}")
+    records_written = int(df.shape[0])
+    print(f"Written {records_written} records to {file_path}")
     return
 def get_gex_levels_from_deltatable() -> pd.DataFrame:
     """
@@ -192,17 +192,29 @@ def get_gex_levels_from_deltatable() -> pd.DataFrame:
     delta_table_url = 's3://' + DELTA_TABLE
     df = duckdb_conn.sql(f"SELECT * FROM delta_scan('{delta_table_url}')").to_df()
     return df
+
+def update_database_duckdb():
+    """
+    Updates the DuckDB database with option chains data.
+    
+    """
+    print("Getting past records from S3 parquet files")
+    load_db()
+    print("Getting last data from CBOE")
+    store_option_chains()
+    print("Calculating GEX data and updating S3 parquet file")
+    updated_option_chains_gex()
+    print("Calculating GEX levels and writing to S3 DeltaTable")
+    write_gex_levels_to_deltatable(DELTA_TABLE)
+
 def main():
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
-    load_db()
-    store_option_chains()
-    updated_option_chains_gex()
-    write_gex_levels_to_deltatable(DELTA_TABLE)
+    update_database_duckdb()
     # print duckdb records
     # test_read_parquet = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
     # print(test_read_parquet)
-    print(DELTA_TABLE)
+    # print(DELTA_TABLE)
     # delta_table_url = 's3://' + DELTA_TABLE
     # test_read_deltatable = duckdb_conn.sql(f"SELECT * FROM delta_scan('{delta_table_url}')").to_df()
     # print(test_read_deltatable)

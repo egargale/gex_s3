@@ -122,11 +122,11 @@ def store_raw_option_chains() -> dict:
     response_compressed['delayed_timestamp'] = delayed_timestamp
 
     # Create Duckdb record with upload info
-    duckdb_conn = get_duckdb_connection()
     store_option_chains_fromdf(option_chain)
     # test duckdb inmemory worked
-    df = duckdb_conn.sql("SELECT timestamp, symbol FROM option_chains").to_df()
-    print(df)
+    # duckdb_conn = get_duckdb_connection()
+    # df = duckdb_conn.sql("SELECT * FROM option_chains").to_df()
+    # print(df)
 
     # Create MongoDB document with upload information
     with MongoClient(mongo_url) as mongodb_client:
