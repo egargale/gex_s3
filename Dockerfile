@@ -72,4 +72,3 @@ EXPOSE 8000
 # Activate virtual environment and run the app
 # Note: Use shell form to allow environment variable expansion
 CMD ["/bin/sh", "-c", "/opt/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --loop uvloop --http httptools --timeout-keep-alive 60 --no-access-log"]
-# CMD ["/bin/sh", "-c", "/opt/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000"]
