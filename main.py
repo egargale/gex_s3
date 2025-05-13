@@ -23,7 +23,9 @@ from database import (
 from memoryduck import (
     update_database_duckdb,
     get_gex_levels_from_deltatable,
-    load_raschke_db
+    load_raschke_db,
+    read_last_record_from_raschke,
+    update_raschke_from_s3
 )
 
 # Get env variables
@@ -120,6 +122,28 @@ async def gex_levels_data_duck():
     # Convert the DataFrame to a dictionary and return it
     return panda_gex_levels.to_dict(orient="list")
 
+@app.api_route( 
+    "/raschke",
+    methods=["GET", "HEAD"],
+    response_description="Get Raschke Table for Futurues",
+    status_code=status.HTTP_200_OK,
+)
+async def get_raschke_last():
+    """
+    Fetch Raschke last table for FuturesG.
+    """
+    panda_raschke_table = read_last_record_from_raschke()
+    # Convert the DataFrame to a dictionary and return it
+    return panda_raschke_table.to_dict()
+@app.post(
+    "/raschke/update",
+    response_description="Update Raschke Table for Futures",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def update_raschke_db(background_tasks: BackgroundTasks):
+    background_tasks.add_task(update_raschke_from_s3)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
 @app.api_route(
     "/ohlc_data",
     methods=["GET", "HEAD"],
@@ -128,8 +152,7 @@ async def gex_levels_data_duck():
 )
 async def ohlc_data():
     ohlc = get_ohlc_data()
-    ohlc = ohlc.reset_index().drop(columns={'Dividends', 'Stock Splits'})
-        
+    ohlc = ohlc.reset_index().drop(columns={'Dividends', 'Stock Splits'})   
     return ohlc.to_dict('list')
 
 @app.post(
