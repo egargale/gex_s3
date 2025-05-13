@@ -342,6 +342,28 @@ def update_raschke_from_s3():
     )
 
     print(f"Successfully merged data into Delta table at {table_path}")
+    
+    # Step 4: Update in-memory DuckDB `raschke` table
+    # Convert Arrow Table to Pandas (DuckDB can work with Pandas easily)
+    df_new = raschketable.to_pandas()
+
+    # Register new data in DuckDB
+    duckdb_conn.register("df_new", df_new)
+
+    # Delete matched rows in DuckDB
+    duckdb_conn.execute("""
+        DELETE FROM raschke
+        WHERE EXISTS (
+            SELECT 1
+            FROM df_new
+            WHERE raschke.filename = df_new.filename AND raschke.Date = df_new.Date
+        )
+    """)
+
+    # Insert all new/upserted rows
+    duckdb_conn.execute("INSERT INTO raschke SELECT * FROM df_new")
+
+    print("In-memory DuckDB `raschke` table updated")
     return
 def read_last_record_from_raschke() -> pd.DataFrame:
     """
