@@ -17,6 +17,7 @@ AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCE
 S3_ENDPOINT_URL = os.environ.get('S3_ENDPOINT_URL', 'S3_ENDPOINT_URL is missing')
 S3_BUCKET = os.environ.get('S3_BUCKET', 'S3_BUCKET is missing')
 DELTA_TABLE = os.environ.get('DELTA_TABLE', 'DELTA_TABLE is missing')
+SIERRA_FILE_PATH  = os.environ.get('SIERRA_FILE_PATH', 'SIERRA_FILE_PATH is missing')
 
 def load_db():
     # Get the singleton DuckDB connection
@@ -207,10 +208,59 @@ def update_database_duckdb():
     print("Calculating GEX levels and writing to S3 DeltaTable")
     write_gex_levels_to_deltatable(DELTA_TABLE)
 
+def load_raschke_from_s3():
+    """
+    Loads the option chains data from S3.
+    """
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    # Retrieve SIERRA_FILES_PATH from environment variables and append /*.csv
+    sierra_files_path = os.environ.get('SIERRA_FILES_PATH', 's3://lbr-files/LBR')  # Default fallback
+    csv_path = f"s3://{sierra_files_path}/*.csv"
+    # Prepare query
+    query = r'''
+    CREATE OR REPLACE TABLE raschke AS
+        WITH RankedData AS (
+            SELECT *,
+                ROW_NUMBER() OVER (PARTITION BY filename ORDER BY Date DESC) AS rn
+            FROM read_csv(?, union_by_name=true, filename = true)
+        )
+        SELECT 
+            regexp_extract(filename, '([^\/]+)\.csv', 1) AS filename,
+            Date, Open, High, Low, Last,
+            IB, WR7, NR7, TP, "3BT", "Pure 3BT", BO, HBO, LBO, PF3, "PF3[1]",
+            "5SMA", ERun, STPvt, SIG, LongoBO, ShortBO, ROC, "ROC[1]",
+            STPvt_1, "Highest ROC", "Lowest ROC", RANK, ADX
+        FROM RankedData
+        WHERE rn <= 200;
+    '''
+    #  Execute the query
+    duckdb_conn.execute(query, [csv_path])
+    
+    # Count the records after the query
+    records_count = duckdb_conn.execute("SELECT COUNT(*) FROM raschke").fetchone()[0]
+    print(f"Loaded {records_count} records from S3 into raschke table")
+
+def read_last_record_from_raschke() -> pd.DataFrame:
+    """
+    Reads the last record from the raschke table.
+    
+    Returns:
+        pd.DataFrame: The last record from the raschke table.
+    """
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+    # Query the last record from the raschke table
+    query = r'''
+    SELECT * FROM raschke WHERE Date = (SELECT MAX(Date) FROM raschke);
+    '''
+    df = duckdb_conn.execute(query).fetch_df()
+    return df
+
 def main():
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
-    update_database_duckdb()
+    # update_database_duckdb()
     # print duckdb records
     # test_read_parquet = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
     # print(test_read_parquet)
@@ -218,8 +268,12 @@ def main():
     # delta_table_url = 's3://' + DELTA_TABLE
     # test_read_deltatable = duckdb_conn.sql(f"SELECT * FROM delta_scan('{delta_table_url}')").to_df()
     # print(test_read_deltatable)
-    df = get_gex_levels_from_deltatable()
+    # df = get_gex_levels_from_deltatable()
+    # print(df)
+    load_raschke_from_s3()
+    df = read_last_record_from_raschke()
     print(df)
+    
     duckdb_conn.close()
        
 if __name__ == "__main__":
