@@ -22,12 +22,14 @@ from database import (
 )
 from memoryduck import (
     update_database_duckdb,
-    get_gex_levels_from_deltatable
+    get_gex_levels_from_deltatable,
+    load_raschke_db
 )
 
 # Get env variables
 load_dotenv()
-# load_dotenv(dotenv_path=os.path.join('..','.env'))
+# load_rasche db in memrory from deltatable
+load_raschke_db()
 
 # TODO
 DELTA_TABLE = os.environ.get('DELTA_TABLE', 'DELTA_TABLE is missing')

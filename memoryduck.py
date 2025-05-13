@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from cboe_data import get_ticker_info
 from config import CONFIG
 from config import get_duckdb_connection
-from deltalake import write_deltalake
+from deltalake import write_deltalake, DeltaTable
 
 # Get env variables
 load_dotenv()
@@ -208,39 +208,141 @@ def update_database_duckdb():
     print("Calculating GEX levels and writing to S3 DeltaTable")
     write_gex_levels_to_deltatable(DELTA_TABLE)
 
-def load_raschke_from_s3():
+def load_raschke_db():
     """
-    Loads the option chains data from S3.
+    Loads the Delta table Raschke from S3 into DuckDB.
+    Returns the connection or raises an error if loading fails.
     """
-    # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
-    # Retrieve SIERRA_FILES_PATH from environment variables and append /*.csv
-    sierra_files_path = os.environ.get('SIERRA_FILES_PATH', 's3://lbr-files/LBR')  # Default fallback
-    csv_path = f"s3://{sierra_files_path}/*.csv"
-    # Prepare query
+    table_path = 's3://lbr-files/GEX/raschke_table'
+
     query = r'''
     CREATE OR REPLACE TABLE raschke AS
-        WITH RankedData AS (
-            SELECT *,
-                ROW_NUMBER() OVER (PARTITION BY filename ORDER BY Date DESC) AS rn
-            FROM read_csv(?, union_by_name=true, filename = true)
-        )
-        SELECT 
-            regexp_extract(filename, '([^\/]+)\.csv', 1) AS filename,
-            Date, Open, High, Low, Last,
-            IB, WR7, NR7, TP, "3BT", "Pure 3BT", BO, HBO, LBO, PF3, "PF3[1]",
-            "5SMA", ERun, STPvt, SIG, LongoBO, ShortBO, ROC, "ROC[1]",
-            STPvt_1, "Highest ROC", "Lowest ROC", RANK, ADX
-        FROM RankedData
-        WHERE rn <= 200;
+        SELECT * FROM delta_scan(?);
     '''
-    #  Execute the query
-    duckdb_conn.execute(query, [csv_path])
+    try:
+        # Attempt to load the Delta table
+        duckdb_conn.execute(query, [table_path])
+        print("Successfully loaded Raschke Delta table into DuckDB")
+    except Exception as e:
+        print(f"Failed to load Delta table from {table_path}: {e}")
+        # Optionally re-raise or handle accordingly
+        # raise
+    return duckdb_conn
+def create_delta_table_from_csv_history():
+    """
+    Reads 200 days of historical data from S3 CSVs,
+    stores it in DuckDB, and creates (or overwrites)
+    a Delta table with the result.
+    """
+    duckdb_conn = get_duckdb_connection()
+    sierra_files_path = os.environ.get('SIERRA_FILES_PATH', 's3://lbr-files/LBR')
+    csv_path = f"s3://{sierra_files_path}/*.csv"
+    table_path = 's3a://lbr-files/GEX/raschke_table'
     
-    # Count the records after the query
-    records_count = duckdb_conn.execute("SELECT COUNT(*) FROM raschke").fetchone()[0]
-    print(f"Loaded {records_count} records from S3 into raschke table")
+    storage_options = {
+        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
+        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY,
+        'AWS_ENDPOINT_URL': 'https://s3.eu-central-1.wasabisys.com',
+    }
 
+    # SQL query to load and deduplicate CSV data
+    query = r'''
+    CREATE OR REPLACE TABLE raschke AS
+    WITH RankedData AS (
+        SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY filename ORDER BY Date DESC) AS rn
+        FROM read_csv(?, union_by_name=true, filename = true)
+    )
+    SELECT 
+        regexp_extract(filename, '([^\/]+)\.csv', 1) AS filename,
+        Date, Open, High, Low, Last,
+        IB, WR7, NR7, TP, "3BT", "Pure 3BT", BO, HBO, LBO, PF3, "PF3[1]",
+        "5SMA", ERun, STPvt, SIG, LongoBO, ShortBO, ROC, "ROC[1]",
+        STPvt_1, "Highest ROC", "Lowest ROC", RANK, ADX
+    FROM RankedData
+    WHERE rn <= 200;
+    '''
+
+    # Step 1: Execute transformation and store in DuckDB
+    duckdb_conn.execute(query, [csv_path])
+    print("Loaded and stored 200-day history in DuckDB")
+
+    # Step 2: Export to Arrow
+    df_arrow = duckdb_conn.execute("SELECT * FROM raschke").fetch_arrow_table()
+
+    # Step 3: Write to Delta Lake (Overwrite mode)
+    write_deltalake(
+        table_path,
+        df_arrow,
+        mode="overwrite",
+        storage_options=storage_options
+    )
+
+    print(f"Successfully created Delta table at {table_path}")
+def update_raschke_from_s3():
+    """
+    Loads CSV files from S3, transforms them using DuckDB,
+    and upserts the result into a Delta table.
+    """
+    duckdb_conn = get_duckdb_connection()
+    sierra_files_path = os.environ.get('SIERRA_FILES_PATH', 's3://lbr-files/LBR')
+    csv_path = f"s3://{sierra_files_path}/*.csv"
+    
+    # SQL query to transform data
+    query = r'''
+    WITH RankedData AS (
+        SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY filename ORDER BY Date DESC) AS rn
+        FROM read_csv(?, union_by_name=true, filename = true)
+    )
+    SELECT 
+        regexp_extract(filename, '([^\/]+)\.csv', 1) AS filename,
+        Date, Open, High, Low, Last,
+        IB, WR7, NR7, TP, "3BT", "Pure 3BT", BO, HBO, LBO, PF3, "PF3[1]",
+        "5SMA", ERun, STPvt, SIG, LongoBO, ShortBO, ROC, "ROC[1]",
+        STPvt_1, "Highest ROC", "Lowest ROC", RANK, ADX
+    FROM RankedData
+    WHERE rn = 1;
+    '''
+
+    # Step 1: Transform data with DuckDB and fetch as Arrow Table
+    raschketable = duckdb_conn.execute(query, [csv_path]).fetch_arrow_table()
+    # print("Schema of source Arrow table:")
+    # print(raschketable.schema)
+
+    # Step 2: Define or open DeltaTable
+    table_path = 's3a://lbr-files/GEX/raschke_table'
+    storage_options = {
+        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
+        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY,
+        'AWS_ENDPOINT_URL': 'https://s3.eu-central-1.wasabisys.com',
+    }
+
+    try:
+        # Try opening existing Delta table
+        dt = DeltaTable(table_path, storage_options=storage_options)
+    except Exception:
+        # If not exists, create with function
+        print("Delta table does not exist. Creating...")
+        create_delta_table_from_csv_history()
+        return
+
+    # Step 3: Perform UPSERT (Merge)
+    (
+        dt.merge(
+            source=raschketable,
+            predicate="target.filename = source.filename AND target.Date = source.Date",
+            source_alias="source",
+            target_alias="target"
+        )
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute()
+    )
+
+    print(f"Successfully merged data into Delta table at {table_path}")
+    return
 def read_last_record_from_raschke() -> pd.DataFrame:
     """
     Reads the last record from the raschke table.
@@ -256,7 +358,6 @@ def read_last_record_from_raschke() -> pd.DataFrame:
     '''
     df = duckdb_conn.execute(query).fetch_df()
     return df
-
 def main():
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
@@ -270,7 +371,8 @@ def main():
     # print(test_read_deltatable)
     # df = get_gex_levels_from_deltatable()
     # print(df)
-    load_raschke_from_s3()
+    load_raschke_db()
+    update_raschke_from_s3()
     df = read_last_record_from_raschke()
     print(df)
     
