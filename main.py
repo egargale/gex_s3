@@ -193,8 +193,8 @@ async def update_db(background_tasks: BackgroundTasks):
     response_description="Fetch new raw data, transform and update values in database",
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def update_db_duck(background_tasks: BackgroundTasks):
-    background_tasks.add_task(update_database_duckdb)
+async def update_db_duck(background_tasks: BackgroundTasks, ticker: str = "_SPX"):
+    background_tasks.add_task(update_database_duckdb, ticker=ticker)
     return Response(status_code=status.HTTP_202_ACCEPTED)
 
 @app.post(

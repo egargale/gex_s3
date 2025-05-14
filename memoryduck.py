@@ -94,12 +94,11 @@ def calculate_gex_levels_df() -> pd.DataFrame:
     # Return the DataFrame
     return df
 
-def update_database_duckdb():
+def update_database_duckdb(ticker: str = "_SPX"):
     """
-    Updates the DuckDB database with option chains data.
-    
+    Updates the DuckDB database with option chains data for a given ticker.
     """
-    create_gex_delta_table_from_api()
+    create_gex_delta_table_from_api(ticker=ticker)
 
 def load_option_db():
     """
@@ -152,7 +151,7 @@ def load_raschke_db():
         # raise
     return duckdb_conn
 
-def create_gex_delta_table_from_api():
+def create_gex_delta_table_from_api(ticker: str = "_SPX"):
     """
     Processes CBOE Option data and appends only new records to a Delta table in S3.
     Uses DuckDB filtering to avoid loading full datasets into memory.
@@ -160,7 +159,7 @@ def create_gex_delta_table_from_api():
     duckdb_conn = get_duckdb_connection()
 
     # Step 1: Fetch raw JSON from CBOE manually
-    url = 'https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json'
+    url = f'https://cdn.cboe.com/api/global/delayed_quotes/options/{ticker}.json'
 
     query = r'''
     WITH src AS (SELECT * FROM read_json(?))
