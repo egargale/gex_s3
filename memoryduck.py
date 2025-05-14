@@ -1,11 +1,16 @@
 import duckdb
 import pandas as pd
+import datetime
 import os
+import json
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 from cboe_data import get_ticker_info
 from config import CONFIG
 from config import get_duckdb_connection
 from deltalake import write_deltalake, DeltaTable
+
 
 # Get env variables
 load_dotenv()
@@ -18,110 +23,18 @@ S3_ENDPOINT_URL = os.environ.get('S3_ENDPOINT_URL', 'S3_ENDPOINT_URL is missing'
 S3_BUCKET = os.environ.get('S3_BUCKET', 'S3_BUCKET is missing')
 DELTA_TABLE = os.environ.get('DELTA_TABLE', 'DELTA_TABLE is missing')
 SIERRA_FILE_PATH  = os.environ.get('SIERRA_FILE_PATH', 'SIERRA_FILE_PATH is missing')
+# Retry on connection errors or timeouts
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, max=10),
+    retry=retry_if_exception_type((requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+)
+def fetch_cboe_json(url):
+    print(f"Fetching data from {url}")
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()  # Raise exception for HTTP errors
+    return json.dumps(response.json())
 
-def load_db():
-    # Get the singleton DuckDB connection
-    duckdb_conn = get_duckdb_connection()
-    
-    option_chain_ticker_info = get_ticker_info(symbol=CONFIG['CBOE_TICKER'])[0]
-    # Read S3 parquet files and setup a DB
-    # Ensure the DataFrame has a 'close' row and extract its value
-    if 'close' in option_chain_ticker_info.index:
-        spotPrice = option_chain_ticker_info.loc['close'].values[0]  # Extract the value from the 'close' row
-    else:
-        raise
-    print(f"SPX close price: {spotPrice}")
-    
-    # Create or replace table `db_chains`
-    #  CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true) WHERE last_trade_date >= Now() - INTERVAL '3 DAYS' ORDER by last_trade_date;
-    duckdb_conn.execute(r"""
-CREATE OR REPLACE TABLE db_chains AS FROM read_parquet('s3://lbr-files/GEX/GEXARCHIVE/*/*/*.parquet', hive_partitioning = true)
-    WHERE last_trade_date >= Now() - INTERVAL '3 DAYS'
-    ORDER by last_trade_date;
-    """)
-    print(f"History Records loaded: {duckdb_conn.execute("SELECT COUNT(*) FROM db_chains").fetchone()[0]}")
-    #
-    # Create or replace table `db_chains_test`
-    duckdb_conn.execute(r"""
-CREATE OR REPLACE TABLE db_chains_test AS
-    SELECT
-        *,
-        ? AS spotPrice,
-        DATEDIFF('day', CURRENT_DATE, expiration_date) AS dte,
-        (CASE WHEN "right" = 'C' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 ELSE 0 END) AS CallGEX,
-        (CASE WHEN "right" = 'P' THEN "gamma" * open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
-    FROM db_chains;
-    """, [spotPrice])
-    print(f"Records recalculated: {duckdb_conn.execute('SELECT COUNT(*) FROM db_chains_test').fetchone()[0]}")
-    #
-    # Create an index on the `last_trade_date`, `expiration_date`, and `strike` columns
-    duckdb_conn.execute(r"""
-CREATE INDEX option_idx ON db_chains_test (last_trade_date, expiration_date, strike);
-    """)
-    
-    return duckdb_conn
-
-def store_option_chains_fromdf(chain_data):
-    # Get the singleton DuckDB connection
-    duckdb_conn = get_duckdb_connection()
-    
-    # Create table `option_chains_df` from DF
-    duckdb_conn.execute(r"""
-        CREATE OR REPLACE TABLE option_chains AS 
-        SELECT * FROM chain_data;
-        """)
-    
-    return duckdb_conn
-def store_option_chains():
-    
-    # Get the singleton DuckDB connection
-    duckdb_conn = get_duckdb_connection()
-    
-    # Create table `option_chains` by reading JSON data
-    duckdb_conn.execute(r"""
-    CREATE OR REPLACE TABLE option_chains AS 
-    SELECT * FROM read_json_auto('https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json');
-    """)
-    
-    return duckdb_conn
-def updated_option_chains_gex():
-    # Get the singleton DuckDB connection
-    duckdb_conn = get_duckdb_connection()
-    
-    # Create table option_chains_processed with transformations
-    duckdb_conn.execute(r"""
-CREATE OR REPLACE TABLE option_chains_processed AS
-  WITH src AS (SELECT *
-                FROM option_chains)
-    SELECT 
-      symbol,
-      last_trade_date,
-      spotPrice,
-      u.*,
-      STRPTIME(regexp_extract(u.option, '(\d{6})(?:P|C)',1), '%y%m%d') AS expiration_date,
-      TRY_CAST(regexp_extract(u.option, '[PC](\d+)', 1) AS integer) / 1000 AS strike,
-      regexp_extract(u.option, '\d{6}([PC])', 1) AS right,
-      DATEDIFF('day', CURRENT_DATE, STRPTIME(regexp_extract(u.option, '(\d{6})[PC]', 1), '%y%m%d')) AS dte,
-      (CASE WHEN "right" = 'C' THEN u."gamma" * u.open_interest * 100 * spotPrice * spotPrice * 0.01 ELSE 0 END) AS CallGEX,
-      (CASE WHEN "right" = 'P' THEN u."gamma" * u.open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
-    FROM (
-      SELECT symbol, "timestamp" AS last_trade_date, data.current_price AS spotPrice, UNNEST(data.options) AS u FROM src);
-    """)
-
-    duckdb_conn.execute(r"""
-COPY (
-    SELECT (* EXCLUDE (spotPrice, dte, CallGEX, PutGEX)),
-           YEAR(last_trade_date) AS year, 
-           MONTH(last_trade_date) AS month 
-    FROM option_chains_processed
-) TO 's3://lbr-files/GEX/GEXARCHIVE'(FORMAT PARQUET, PARTITION_BY (year, month), APPEND);
-    """)
-    
-    duckdb_conn.execute(r"""
-COPY option_chains_processed TO 's3://lbr-files/GEX/test.xlsx' WITH (FORMAT xlsx, HEADER true);    
-    """)
-    
-    return duckdb_conn
 def calculate_gex_levels_df() -> pd.DataFrame:
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
@@ -141,7 +54,7 @@ def calculate_gex_levels_df() -> pd.DataFrame:
         SUM(CallGEX) / 1e9 AS total_call_gex,
         SUM(PutGEX) / 1e9 AS total_put_gex,
         (SUM(CallGEX) + SUM(PutGEX)) / 1e9 AS total_gamma
-    FROM option_chains_processed
+    FROM option_db
     WHERE open_interest >= 100
     GROUP BY dte, strike
     ORDER BY dte, strike;
@@ -150,48 +63,9 @@ def calculate_gex_levels_df() -> pd.DataFrame:
     df = duckdb_conn.execute(query).fetchdf()
     
     # Print the DataFrame for debugging purposes
-    # print("Quiery from duckDB Table option_chains_processed")
-    # print(df)
+    print(df)
     
     # Return the DataFrame
-    return df
-def write_gex_levels_to_deltatable(file_path: str):
-    """
-    Writes GEX levels data to an S3 DeltaTable.
-
-    Parameters:
-        file_path (str): Path to S3  DeltaTable.
-    """
-    # add s3a:// to file_path
-    file_path = 's3a://' + file_path
-    # Get GEX Levels
-    df = calculate_gex_levels_df()
-    storage_options = {
-        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
-        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY,
-        'AWS_ENDPOINT_URL': 'https://s3.eu-central-1.wasabisys.com',
-    }
-    write_deltalake(
-        file_path,
-        df,
-        mode="overwrite",
-        storage_options=storage_options
-    )
-    records_written = int(df.shape[0])
-    print(f"Written {records_written} records to {file_path}")
-    return
-def get_gex_levels_from_deltatable() -> pd.DataFrame:
-    """
-    Reads GEX levels data from an S3 DeltaTable.
-
-    Returns:
-        pd.DataFrame: GEX levels data.
-    """
-     # Get the singleton DuckDB connection
-    duckdb_conn = get_duckdb_connection()
-    # add s3a:// to DELTA_TABLE
-    delta_table_url = 's3://' + DELTA_TABLE
-    df = duckdb_conn.sql(f"SELECT * FROM delta_scan('{delta_table_url}')").to_df()
     return df
 
 def update_database_duckdb():
@@ -199,14 +73,36 @@ def update_database_duckdb():
     Updates the DuckDB database with option chains data.
     
     """
-    print("Getting past records from S3 parquet files")
-    load_db()
-    print("Getting last data from CBOE")
-    store_option_chains()
-    print("Calculating GEX data and updating S3 parquet file")
-    updated_option_chains_gex()
-    print("Calculating GEX levels and writing to S3 DeltaTable")
-    write_gex_levels_to_deltatable(DELTA_TABLE)
+    create_gex_delta_table_from_api()
+
+def load_option_db():
+    """
+    Loads the Delta table from S3 into DuckDB.
+    Returns the connection or raises an error if loading fails.
+    """
+    duckdb_conn = get_duckdb_connection()
+    table_path = 's3://lbr-files/GEX/options_table'
+
+    query = r'''
+    CREATE OR REPLACE TABLE option_db AS
+    SELECT * FROM delta_scan(?);
+    '''
+    try:
+        # Attempt to load the Delta table
+        duckdb_conn.execute(query, [table_path])
+        print("Successfully loaded Delta table into DuckDB")
+        duckdb_conn.execute("CREATE INDEX option_idx ON option_db (fetchTime, expiration_date, strike);")
+    except Exception as e:
+        print(f"Failed to load Option Delta table from {table_path}: {e}")
+        # Optionally re-raise or handle accordingly
+        # raise
+    
+    # Print sample from the table
+    sample_df = duckdb_conn.execute("SELECT * FROM option_db USING SAMPLE 10 ROWS ORDER BY expiration_date;").fetchdf()
+    print("Sample from the Option_db table:")
+    print(sample_df)
+    
+    return duckdb_conn
 
 def load_raschke_db():
     """
@@ -229,6 +125,120 @@ def load_raschke_db():
         # Optionally re-raise or handle accordingly
         # raise
     return duckdb_conn
+
+def create_gex_delta_table_from_api():
+    """
+    Processes CBOE Option data and appends only new records to a Delta table in S3.
+    Uses DuckDB filtering to avoid loading full datasets into memory.
+    """
+    duckdb_conn = get_duckdb_connection()
+
+    # Step 1: Fetch raw JSON from CBOE manually
+    url = 'https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json'
+
+    query = r'''
+    WITH src AS (SELECT * FROM read_json(?))
+    SELECT
+      fetchTime,
+      symbol,
+      spotPrice,
+      u.*,
+      STRPTIME(regexp_extract(u.option, '(\d{6})(?:P|C)',1), '%y%m%d') AS expiration_date,
+      TRY_CAST(regexp_extract(u.option, '[PC](\d+)', 1) AS integer) / 1000 AS strike,
+      regexp_extract(u.option, '\d{6}([PC])', 1) AS right,
+      DATEDIFF('day', CURRENT_DATE, STRPTIME(regexp_extract(u.option, '(\d{6})[PC]', 1), '%y%m%d')) AS dte,
+      (CASE WHEN "right" = 'C' THEN u."gamma" * u.open_interest * 100 * spotPrice * spotPrice * 0.01 ELSE 0 END) AS CallGEX,
+      (CASE WHEN "right" = 'P' THEN u."gamma" * u.open_interest * 100 * spotPrice * spotPrice * 0.01 * -1 ELSE 0 END) AS PutGEX
+    FROM ( SELECT symbol, "timestamp" AS fetchTime, data.current_price AS spotPrice, UNNEST(data.options) AS u FROM src);
+    '''
+    
+    try:
+        # json_data = fetch_cboe_json(url)
+        transformed = duckdb_conn.execute(query, [url]).fetchdf()
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to fetch JSON from {url}: {e}")
+        return
+
+    # Step 2: Register as DuckDB table for comparison
+    duckdb_conn.register("new_data", transformed)
+
+    # Step 3: Define Delta Table Path
+    table_path = 's3a://lbr-files/GEX/options_table'
+    storage_options = {
+        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
+        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY,
+        'AWS_ENDPOINT_URL': 'https://s3.eu-central-1.wasabisys.com',
+    }
+
+    try:
+        # Try reading existing Delta table schema
+        existing_df = duckdb_conn.sql(f"SELECT * FROM delta_scan('{table_path.replace('s3a://', 's3://')}') LIMIT 0").df()
+        existing_columns = set(existing_df.columns)
+        new_columns = set(transformed.columns)
+
+        if not new_columns.issubset(existing_columns):
+            raise ValueError("Schema mismatch between source and Delta table")
+
+        # Step 4: Use DuckDB to filter out existing records
+        duckdb_conn.execute(f"""
+            CREATE OR REPLACE TABLE new_records AS
+            SELECT nd.*
+            FROM new_data nd
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM delta_scan('{table_path.replace('s3a://', 's3://')}') t
+                WHERE t.spotPrice = nd.spotPrice AND t.symbol = nd.symbol
+            )
+        """)
+
+        # Step 5: Fetch filtered DataFrame and write to Delta Lake
+        new_records_df = duckdb_conn.execute("SELECT * FROM new_records").fetchdf()
+        if not new_records_df.empty:
+            write_deltalake(
+                table_path,
+                new_records_df,
+                partition_by=['symbol'],
+                mode="append",
+                storage_options=storage_options
+            )
+            print(f"Appended {len(new_records_df)} new records to Delta table at {table_path}")
+        else:
+            print("No new records to append.")
+
+    except Exception as e:
+        # If Delta table doesn't exist yet, create it
+        print("Creating new Delta table...")
+        write_deltalake(
+            table_path,
+            transformed,
+            partition_by=['symbol'],
+            mode="overwrite",
+            storage_options=storage_options
+        )
+        print(f"Created new Delta table at {table_path}")
+    
+    # Step 4: Update in-memory DuckDB `option_db` table
+
+    # Step 6: Update in-memory DuckDB `option_db` table
+    try:
+        # Try to load existing option_db table
+        duckdb_conn.execute("SELECT * FROM option_db LIMIT 1")
+        print("Existing 'option_db' table found. Appending new records.")
+        
+        # Append only new records to existing table
+        if not new_records_df.empty:
+            duckdb_conn.register("new_records_df", new_records_df)
+            duckdb_conn.execute("INSERT INTO option_db SELECT * FROM new_records_df")
+            print(f"Updated 'option_db' with {len(new_records_df)} new records.")
+    except Exception:
+        # If table doesn't exist, create it with all current data
+        print("Creating new 'option_db' table.")
+        duckdb_conn.register("all_data", transformed)
+        duckdb_conn.execute("CREATE TABLE option_db AS SELECT * FROM all_data")
+        print(f"'option_db' created with {len(transformed)} initial records.")
+    
+    return
+
 def create_delta_table_from_csv_history():
     """
     Reads 200 days of historical data from S3 CSVs,
@@ -383,6 +393,14 @@ def read_last_record_from_raschke() -> pd.DataFrame:
 def main():
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
+    # load_raschke_db()
+    # update_raschke_from_s3()
+    # df = read_last_record_from_raschke()
+    # print(df)
+    load_option_db()
+    calculate_gex_levels_df()
+    # create_gex_delta_table_from_api()
+    
     # update_database_duckdb()
     # print duckdb records
     # test_read_parquet = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
@@ -393,11 +411,7 @@ def main():
     # print(test_read_deltatable)
     # df = get_gex_levels_from_deltatable()
     # print(df)
-    load_raschke_db()
-    update_raschke_from_s3()
-    df = read_last_record_from_raschke()
-    print(df)
-    
+    # 
     duckdb_conn.close()
        
 if __name__ == "__main__":

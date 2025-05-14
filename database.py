@@ -5,7 +5,6 @@ from io import BytesIO, StringIO, TextIOWrapper
 import gzip
 import datetime
 import requests
-import duckdb
 from dotenv import load_dotenv
 import pandas as pd
 import yfinance as yf
@@ -17,12 +16,9 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 import boto3
 
-# from memoryduck import get_duckdb_conn, store_option_chains, store_option_chains_fromdf, updated_option_chains_gex, load_db
 from cboe_data import get_quotes, get_ticker_info
 from gamma_exposure import calculate_gamma_profile, calculate_spot_total_gamma_call_puts
 from config import CONFIG
-from config import get_duckdb_connection
-from memoryduck import store_option_chains_fromdf
 
 # Get env variables
 load_dotenv()
@@ -120,13 +116,6 @@ def store_raw_option_chains() -> dict:
     # Append additional info
     response_compressed['query_timestamp'] = query_timestamp.strftime("%Y-%m-%dT%H:%M:%S%z")
     response_compressed['delayed_timestamp'] = delayed_timestamp
-
-    # Create Duckdb record with upload info
-    store_option_chains_fromdf(option_chain)
-    # test duckdb inmemory worked
-    # duckdb_conn = get_duckdb_connection()
-    # df = duckdb_conn.sql("SELECT * FROM option_chains").to_df()
-    # print(df)
 
     # Create MongoDB document with upload information
     with MongoClient(mongo_url) as mongodb_client:
@@ -406,10 +395,6 @@ def update_database():
     
     print(f'Last trade date obtained: {last_trade_date}')
     
-    # print duckdb records
-    # test = duckdb_conn.sql("SELECT * FROM option_chains_df").to_df()
-    # print(test)
-
     # Calculate gamma exposure and store in database
     upload_id_profile, upload_id_zero = store_gamma_profile(
         secure_url=response['secure_url'], 

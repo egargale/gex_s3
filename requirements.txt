@@ -38,6 +38,7 @@ sniffio
 soupsieve
 SQLAlchemy
 starlette
+tenacity
 typing_extensions
 tzdata
 urllib3

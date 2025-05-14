@@ -22,19 +22,19 @@ from database import (
 )
 from memoryduck import (
     update_database_duckdb,
-    get_gex_levels_from_deltatable,
+    update_raschke_from_s3,
     load_raschke_db,
+    load_option_db,
     read_last_record_from_raschke,
-    update_raschke_from_s3
+    calculate_gex_levels_df
 )
 
 # Get env variables
 load_dotenv()
 # load_rasche db in memrory from deltatable
 load_raschke_db()
-
-# TODO
-DELTA_TABLE = os.environ.get('DELTA_TABLE', 'DELTA_TABLE is missing')
+#  Load opyton db in memrory from deltatable
+load_option_db()
 
 app = FastAPI(
     title="Gamma Exposure app",
@@ -118,7 +118,7 @@ async def gex_levels_data_duck():
     Fetch GEX levels data from DuckDB using the global connection.
     """
     # Call the function to fetch GEX levels data
-    panda_gex_levels = get_gex_levels_from_deltatable()
+    panda_gex_levels = calculate_gex_levels_df()
     # Convert the DataFrame to a dictionary and return it
     return panda_gex_levels.to_dict(orient="list")
 
