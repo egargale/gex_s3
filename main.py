@@ -26,7 +26,9 @@ from memoryduck import (
     load_raschke_db,
     load_option_db,
     read_last_record_from_raschke,
-    calculate_gex_levels_df
+    calculate_gex_levels_df,
+    get_options_chain_data
+    
 )
 
 # Get env variables
@@ -132,6 +134,17 @@ async def gex_levels_data_duck(
     
     # Convert the DataFrame to a dictionary and return it
     return panda_gex_levels.to_dict(orient="list")
+
+@app.get("/options_chain")
+async def options_chain(
+    ticker: str = Query(None, description="Filter by ticker symbol"),
+    days: int = Query(1, description="Number of days to look back (default: 1)")
+):
+    """
+    Retrieve filtered options chain data by ticker and time range.
+    """
+    df = get_options_chain_data(ticker=ticker, days=days)
+    return df.to_dict(orient="records")
 
 @app.api_route( 
     "/raschke",

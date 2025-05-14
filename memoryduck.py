@@ -35,6 +35,32 @@ def fetch_cboe_json(url):
     response.raise_for_status()  # Raise exception for HTTP errors
     return json.dumps(response.json())
 
+def get_options_chain_data(ticker: str = None, days: int = None) -> pd.DataFrame:
+    # Get the singleton DuckDB connection
+    duckdb_conn = get_duckdb_connection()
+
+    # Base query
+    query = """
+        SELECT * FROM option_db
+        WHERE 1=1
+    """
+
+    # Add ticker filter if provided
+    if ticker:
+        query += f" AND symbol = '{ticker}'"
+
+    # Add time filter if days is provided
+    if days:
+        query += f" AND fetchTime >= CURRENT_DATE - INTERVAL '{days} days'"
+
+    # Finalize query
+    query += " ORDER BY fetchTime DESC;"
+
+    # Execute the query and fetch the result as a DataFrame
+    df = duckdb_conn.execute(query).fetchdf()
+
+    return df
+
 def calculate_gex_levels_df() -> pd.DataFrame:
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
@@ -63,7 +89,7 @@ def calculate_gex_levels_df() -> pd.DataFrame:
     df = duckdb_conn.execute(query).fetchdf()
     
     # Print the DataFrame for debugging purposes
-    print(df)
+    # print(df)
     
     # Return the DataFrame
     return df
