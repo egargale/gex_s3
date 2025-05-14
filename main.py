@@ -1,4 +1,4 @@
-from fastapi import FastAPI, status, HTTPException, BackgroundTasks
+from fastapi import FastAPI, status, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
@@ -110,15 +110,26 @@ async def gex_levels_data():
 @app.api_route( 
     "/gex_levels_duck",
     methods=["GET", "HEAD"],
-    response_description="Get gex levels data from DuckDB",
+    response_description="Get gex levels data from DuckDB with optional DTE filtering",
     status_code=status.HTTP_200_OK,
 )
-async def gex_levels_data_duck():
+async def gex_levels_data_duck(    
+    dte_min: int = Query(None, description="Filter records with DTE greater than or equal to this value"),
+    dte_max: int = Query(None, description="Filter records with DTE less than or equal to this value")
+    ):
     """
     Fetch GEX levels data from DuckDB using the global connection.
     """
     # Call the function to fetch GEX levels data
     panda_gex_levels = calculate_gex_levels_df()
+    
+    # Apply DTE filters if both min and max are provided
+    if dte_min is not None and dte_max is not None:
+        panda_gex_levels = panda_gex_levels[
+            (panda_gex_levels['dte'] >= dte_min) & 
+            (panda_gex_levels['dte'] <= dte_max)
+        ]
+    
     # Convert the DataFrame to a dictionary and return it
     return panda_gex_levels.to_dict(orient="list")
 
