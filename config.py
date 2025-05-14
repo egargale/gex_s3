@@ -22,7 +22,7 @@ def get_duckdb_connection():
     """
     global duckdb_conn
     if duckdb_conn is None:
-        duckdb_conn = duckdb.connect()
+        duckdb_conn = duckdb.connect('/tmp/test.duckdb')
         print("DuckDB connection initialized.")
          # Get env variables
         load_dotenv()
@@ -46,7 +46,7 @@ def get_duckdb_connection():
         # )
         # duckdb_conn.sql("use external_db")
         # for testing use in memory 
-        duckdb_conn.sql("USE memory;")
+        # duckdb_conn.sql("USE memory;")
         duckdb_conn.sql("INSTALL httpfs;")
         duckdb_conn.sql("LOAD httpfs;")
         duckdb_conn.sql("INSTALL delta;")
