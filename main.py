@@ -117,13 +117,14 @@ async def gex_levels_data():
 )
 async def gex_levels_data_duck(    
     dte_min: int = Query(None, description="Filter records with DTE greater than or equal to this value"),
-    dte_max: int = Query(None, description="Filter records with DTE less than or equal to this value")
+    dte_max: int = Query(None, description="Filter records with DTE less than or equal to this value"),
+    ticker: str = Query("_SPX", description="Ticker symbol to filter data, default is '_SPX'")
     ):
     """
     Fetch GEX levels data from DuckDB using the global connection.
     """
-    # Call the function to fetch GEX levels data
-    panda_gex_levels = calculate_gex_levels_df()
+     # Call the function to fetch GEX levels data with the specified ticker
+    panda_gex_levels = calculate_gex_levels_df(ticker=ticker)
     
     # Apply DTE filters if both min and max are provided
     if dte_min is not None and dte_max is not None:

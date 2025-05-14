@@ -61,7 +61,7 @@ def get_options_chain_data(ticker: str = None, days: int = None) -> pd.DataFrame
 
     return df
 
-def calculate_gex_levels_df() -> pd.DataFrame:
+def calculate_gex_levels_df(ticker: str = "_SPX") -> pd.DataFrame:
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
     """
@@ -81,12 +81,12 @@ def calculate_gex_levels_df() -> pd.DataFrame:
         SUM(PutGEX) / 1e9 AS total_put_gex,
         (SUM(CallGEX) + SUM(PutGEX)) / 1e9 AS total_gamma
     FROM option_db
-    WHERE open_interest >= 100
+    WHERE symbol = ? AND open_interest >= 100
     GROUP BY dte, strike
     ORDER BY dte, strike;
     """
     # Execute the query and fetch the result as a DataFrame
-    df = duckdb_conn.execute(query).fetchdf()
+    df = duckdb_conn.execute(query, [ticker]).fetchdf()
     
     # Print the DataFrame for debugging purposes
     # print(df)
@@ -423,7 +423,8 @@ def main():
     # df = read_last_record_from_raschke()
     # print(df)
     load_option_db()
-    calculate_gex_levels_df()
+    df = calculate_gex_levels_df("SPY")
+    print(df)
     # create_gex_delta_table_from_api()
     
     # update_database_duckdb()

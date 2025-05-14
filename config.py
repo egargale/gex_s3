@@ -22,7 +22,14 @@ def get_duckdb_connection():
     """
     global duckdb_conn
     if duckdb_conn is None:
-        duckdb_conn = duckdb.connect('/tmp/test.duckdb')
+        try:
+            # Attempt to connect to the persistent DuckDB file
+            duckdb_conn = duckdb.connect('/tmp/test.duckdb')
+            print("Connected to persistent DuckDB.")
+        except Exception as e:
+            print(f"Failed to open DuckDB file: {e}. Falling back to in-memory database.")
+            duckdb_conn = duckdb.connect(':memory:')  # Use in-memory DB
+       
         print("DuckDB connection initialized.")
          # Get env variables
         load_dotenv()
