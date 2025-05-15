@@ -418,12 +418,12 @@ def read_last_record_from_raschke() -> pd.DataFrame:
 def main():
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()
-    # load_raschke_db()
-    # update_raschke_from_s3()
-    # df = read_last_record_from_raschke()
-    # print(df)
+    load_raschke_db()
+    update_raschke_from_s3()
+    df = read_last_record_from_raschke()
+    print(df)
     load_option_db()
-    df = calculate_gex_levels_df("SPY")
+    df = calculate_gex_levels_df("_SPX")
     print(df)
     # create_gex_delta_table_from_api()
     
