@@ -11,6 +11,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from prefect  import task, flow
 
 from .config import get_duckdb_connection
 
@@ -96,12 +97,14 @@ def calculate_gex_levels_df(ticker: str = "_SPX") -> pd.DataFrame:
     # Return the DataFrame
     return df
 
+@flow
 def update_database_duckdb(ticker: str = "_SPX"):
     """
     Updates the DuckDB database with option chains data for a given ticker.
     """
     create_gex_delta_table_from_api(ticker=ticker)
 
+@task
 def load_option_db():
     """
     Loads the Delta table from S3 into DuckDB.
@@ -131,6 +134,7 @@ def load_option_db():
     
     return duckdb_conn
 
+@task
 def load_raschke_db():
     """
     Loads the Delta table Raschke from S3 into DuckDB.
@@ -153,6 +157,7 @@ def load_raschke_db():
         # raise
     return duckdb_conn
 
+@task
 def create_gex_delta_table_from_api(ticker: str = "_SPX"):
     """
     Processes CBOE Option data and appends only new records to a Delta table in S3.
@@ -317,6 +322,7 @@ def create_delta_table_from_csv_history():
     )
 
     print(f"Successfully created Delta table at {table_path}")
+@task
 def update_raschke_from_s3():
     """
     Loads CSV files from S3, transforms them using DuckDB,
@@ -417,6 +423,7 @@ def read_last_record_from_raschke() -> pd.DataFrame:
     '''
     df = duckdb_conn.execute(query).fetch_df()
     return df
+@flow
 def main():
     # Get the singleton DuckDB connection
     duckdb_conn = get_duckdb_connection()  # noqa: F841
@@ -426,5 +433,16 @@ def main():
     
     print("DuckDB initialized and ready for API usage.")
        
+@flow
+def full_pipeline():
+    result = main()
+    update_database_duckdb.serve(
+        name="GEX-deployment",
+        tags=["onboarding"],
+        parameters={"ticker": "_SPX"},
+        interval=60
+    )
+    return result
+
 if __name__ == "__main__":
-    main()
+    full_pipeline()

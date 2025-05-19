@@ -18,8 +18,13 @@ services:
       # Rebuild the image on changes to the `pyproject.toml`
       - action: rebuild
         path: ./pyproject.toml
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
     env_file:
       - .env_docker
+    depends_on:
+      prefect-server:
+        condition: service_healthy
     ports:
       - "9999:80"
     networks:
@@ -31,13 +36,17 @@ services:
       retries: 3
   prefect-server:
     image: prefecthq/prefect:3-latest
-    container_name: prefect-server
+    # container_name: prefect-server
     ports:
       - "4200:4200"
     command: ["prefect", "server", "start", "--host", "0.0.0.0"]
     networks:
       - backend
-    restart: unless-stopped    
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s = socket.create_connection(('localhost', 4200), timeout=3); s.close()\" || exit 1"]
+      interval: 60s
+      timeout: 3s
+      retries: 3    
 
 networks:
   backend:
