@@ -1,10 +1,9 @@
 """Functions to connect and retrieve data from databases"""
 
 import os 
-from io import BytesIO, StringIO, TextIOWrapper
+from io import BytesIO, TextIOWrapper
 import gzip
 import datetime
-import requests
 from dotenv import load_dotenv
 import pandas as pd
 import yfinance as yf
@@ -16,9 +15,9 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 import boto3
 
-from cboe_data import get_quotes, get_ticker_info
-from gamma_exposure import calculate_gamma_profile, calculate_spot_total_gamma_call_puts
-from config import CONFIG
+from .cboe_data import get_quotes, get_ticker_info
+from .gamma_exposure import calculate_gamma_profile, calculate_spot_total_gamma_call_puts
+from .config import CONFIG
 
 # Get env variables
 load_dotenv()
@@ -83,10 +82,7 @@ def store_raw_option_chains() -> dict:
     delayed_timestamp = option_chain_ticker_info.loc['lastTradeTimestamp',:].item()
     
     # Store compressed .tag.gz file in object storage
-    fname_decompressed = f'df_test_memory.csv'
-    fname_cloudinary = f'cboe_opt_chain_timestamp_{query_timestamp.strftime("%Y-%m-%dT%H:%M:%S%z")}_delayed_{delayed_timestamp}.tar.gz'
-
-
+    
     with BytesIO() as buf:
         with gzip.GzipFile(fileobj=buf, mode='w') as gz_file:
             # Write the option chain DataFrame to the gzip file
@@ -141,7 +137,7 @@ def store_raw_option_chains() -> dict:
     return response_compressed
 
 def store_execution_details_sql(response_compressed:dict) -> int:
-    from data_models import IdTable
+    from .data_models import IdTable
     # Create new instance of IdTable
     id_table = IdTable(
         execution_timestamp=pd.to_datetime(response_compressed['query_timestamp']),
@@ -303,7 +299,7 @@ def get_upload_info_from_mongo(mongodb_upload_id:str) -> pd.DataFrame:
     
     
 def get_execution_id() -> pd.DataFrame:
-    from data_models import IdTable
+    from .data_models import IdTable
     result = session.query(IdTable)
     df_id = pd.read_sql(result.statement,session.bind)
     

@@ -1,16 +1,18 @@
-import duckdb
-import pandas as pd
-import datetime
-import os
 import json
-import requests
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from dotenv import load_dotenv
-from cboe_data import get_ticker_info
-from config import CONFIG
-from config import get_duckdb_connection
-from deltalake import write_deltalake, DeltaTable
+import os
 
+import pandas as pd
+import requests
+from deltalake import DeltaTable, write_deltalake
+from dotenv import load_dotenv
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from .config import get_duckdb_connection
 
 # Get env variables
 load_dotenv()
@@ -230,7 +232,7 @@ def create_gex_delta_table_from_api(ticker: str = "_SPX"):
         else:
             print("No new records to append.")
 
-    except Exception as e:
+    except Exception:
         # If Delta table doesn't exist yet, create it
         print("Creating new Delta table...")
         write_deltalake(
@@ -417,28 +419,12 @@ def read_last_record_from_raschke() -> pd.DataFrame:
     return df
 def main():
     # Get the singleton DuckDB connection
-    duckdb_conn = get_duckdb_connection()
+    duckdb_conn = get_duckdb_connection()  # noqa: F841
     load_raschke_db()
     update_raschke_from_s3()
-    df = read_last_record_from_raschke()
-    print(df)
     load_option_db()
-    df = calculate_gex_levels_df("_SPX")
-    print(df)
-    # create_gex_delta_table_from_api()
     
-    # update_database_duckdb()
-    # print duckdb records
-    # test_read_parquet = duckdb_conn.sql("SELECT * FROM option_chains_processed").to_df()
-    # print(test_read_parquet)
-    # print(DELTA_TABLE)
-    # delta_table_url = 's3://' + DELTA_TABLE
-    # test_read_deltatable = duckdb_conn.sql(f"SELECT * FROM delta_scan('{delta_table_url}')").to_df()
-    # print(test_read_deltatable)
-    # df = get_gex_levels_from_deltatable()
-    # print(df)
-    # 
-    duckdb_conn.close()
+    print("DuckDB initialized and ready for API usage.")
        
 if __name__ == "__main__":
     main()

@@ -4,11 +4,24 @@
 services:
   app:
     build: .
-    image: egargale/gexdata:latest
+    # image: egargale/gexdata:latest
+    develop:
+      watch:
+      # Sync the working directory with the `/app` directory in the container
+      - action: sync
+        path: .
+        target: /app
+        # Exclude the project virtual environment
+        ignore:
+          - .venv/
+          
+      # Rebuild the image on changes to the `pyproject.toml`
+      - action: rebuild
+        path: ./pyproject.toml
     env_file:
       - .env_docker
     ports:
-      - "9999:8000"
+      - "9999:80"
     networks:
       - backend
     healthcheck:

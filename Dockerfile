@@ -1,74 +1,41 @@
-# Stage 1: Build stage
-FROM python:3.12-slim-bookworm AS builder
+# An example using multi-stage image builds to create a final image without uv.
 
-# Set working directory
+# First, build the application in the `/app` directory.
+# See `Dockerfile` for details.
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+# RUN apt update && \
+#     apt install -y --no-install-recommends curl && \
+#     pip install psycopg2-binary s3fs
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Disable Python downloads, because we want to use the system interpreter
+# across both images. If using a managed Python version, it needs to be
+# copied from the build image into the final image; see `standalone.Dockerfile`
+# for an example.
+ENV UV_PYTHON_DOWNLOADS=0
+# Ensure the installed binary is on the `PATH`
+ENV PATH="/root/.local/bin/:$PATH"
 WORKDIR /app
-ARG PYDANTIC_VERSION=2.5.3
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
-# Explicit CPU architecture optimizations
-ENV CFLAGS="-march=native -O3"
-ENV LDFLAGS="-flto -fuse-ld=gold"
-# Copy only requirements.txt first to leverage Docker cache
-COPY requirements.txt .
-# Install build dependencies for lxml and other packages
-RUN set -eux \
-    && apt-get update && apt-get install -y  --no-install-recommends \
-        build-essential \
-        gfortran \
-        pkg-config \
-        libopenblas-dev \
-        liblapack-dev \
-        python3-dev \
-        curl \
-        cargo \
-        libxml2-dev \
-        libxslt1-dev \
-        libpq-dev \
-        libffi-dev \
-        libopenblas64-openmp-dev \
-        libatlas3-base \
-    && python -m pip install --upgrade pip \
-    && python -m venv /opt/venv \
-    &&  /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
-    # Cleanup build deps
-    && apt-get purge --auto-remove --yes \
-        build-essential \
-    && apt-get clean \
-    && rm --recursive --force /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-dev
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
 
-# Stage 2: Final stage
-FROM python:3.12-slim-bookworm
+# Then, use a final image without uv
+# FROM python:3.13-slim-bookworm
+# It is important to use the image that matches the builder, as the path to the
+# Python executable must be the same, e.g., using `python:3.11-slim-bookworm`
+# will fail.
 
-# Set working directory
-WORKDIR /app
+# Copy the application from the builder
+# COPY --from=builder --chown=app:app /app /app
 
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    PYTHONFAULTHANDLER=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:$PATH"
 
-# Install runtime dependencies & clean in single layer
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libopenblas-dev \
-    liblapack-dev \
-    libxml2-dev \
-    libxslt1-dev \
-    libpq-dev \
-    libffi-dev \
-    libopenblas64-openmp-dev \
-    libatlas3-base \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-# Copy Python env from builder to clean container image
-COPY --from=builder /opt/venv /opt/venv
-
-# Copy application code
-COPY . .
-
-# Expose port (default is 80, but can be overridden via .env file)
-EXPOSE 8000 
-
-# Activate virtual environment and run the app
-# Note: Use shell form to allow environment variable expansion
-CMD ["/bin/sh", "-c", "/opt/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --loop uvloop --http httptools --timeout-keep-alive 60 --no-access-log"]
+# Run the FastAPI application by default
+# CMD ["uv", "run", "main.py"]
+CMD ["/app/.venv/bin/fastapi", "run", "app/main.py", "--port", "80", "--host", "0.0.0.0"]
