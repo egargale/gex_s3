@@ -30,6 +30,7 @@ pymongo
 python-dateutil
 python-dotenv
 pytz
+prefect-client
 requests
 scipy
 setuptools

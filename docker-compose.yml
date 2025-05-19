@@ -16,6 +16,15 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    container_name: prefect-server
+    ports:
+      - "4200:4200"
+    command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+    networks:
+      - backend
+    restart: unless-stopped    
 
 networks:
   backend:
